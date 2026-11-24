@@ -3,11 +3,13 @@
 Revision ID: 002_add_users_table
 Revises: 001_baseline
 Create Date: 2026-09-01 00:01:00.000000
-
 """
+
 from collections.abc import Sequence
+
 from alembic import op
 import sqlalchemy as sa
+
 
 revision: str = '002_add_users_table'
 down_revision: str | None = '001_baseline'
@@ -21,11 +23,11 @@ def upgrade() -> None:
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.Column('email', sa.String(length=255), nullable=False),
         sa.Column('password_hash', sa.String(length=255), nullable=False),
-        sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('true')),
-        sa.Column('is_admin', sa.Boolean(), nullable=False, server_default=sa.text('false')),
+        sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.true()),
+        sa.Column('is_admin', sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint('id')
+        sa.PrimaryKeyConstraint('id'),
     )
     op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
 
