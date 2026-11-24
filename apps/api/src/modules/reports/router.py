@@ -1,77 +1,83 @@
-import uuid
+from __future__ import annotations
 
-from fastapi import APIRouter, Query, Response, status
+from datetime import datetime
+from typing import Annotated
+from uuid import UUID
 
-from src.core.database import DBSession
-from src.core.dependencies import CurrentUser, VerifiedUser
-from src.core.enums import ReportCategory, ReportStatus
-from src.modules.reports import service as report_service
-from src.core.storage import get_media_storage
-from src.modules.reports.schemas import (
-    CreateReportRequest,
-    PresignMediaRequest,
-    PresignMediaResponse,
-    ReportResponse,
-    UpdateReportRequest,
-)
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.database import get_session
+from src.modules.reports.repository import ReportRepository, ReportSortField
+from src.modules.reports.schemas import ReportListResponse, ReportRead
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-@router.post("/media/presign", response_model=PresignMediaResponse)
-async def presign_report_media(
-    payload: PresignMediaRequest, _current_user: CurrentUser
-) -> PresignMediaResponse:
-    upload = get_media_storage().presign_upload(
-        filename=payload.filename,
-        content_type=payload.content_type,
-        size_bytes=payload.size_bytes,
-    )
-    return PresignMediaResponse(
-        upload_url=upload.upload_url,
-        media_url=upload.media_url,
-        method=upload.method,
-        headers=upload.headers or {},
-    )
+def get_report_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ReportRepository:
+    return ReportRepository(session)
 
 
-@router.post("", response_model=ReportResponse, status_code=201)
-async def create_report(
-    payload: CreateReportRequest, current_user: VerifiedUser, db: DBSession
-) -> ReportResponse:
-    return await report_service.create_report(db, current_user.id, payload)
-
-
-@router.get("", response_model=list[ReportResponse])
+@router.get(
+    "",
+    response_model=ReportListResponse,
+    summary="List reports with filtering, text search, date range, and sorting",
+)
 async def list_reports(
-    db: DBSession,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
-    category: ReportCategory | None = None,
-    status: ReportStatus | None = None,
-    user_id: uuid.UUID | None = None,
-) -> list[ReportResponse]:
-    return await report_service.list_reports(
-        db, skip=skip, limit=limit, category=category, status=status, user_id=user_id
+    repo: Annotated[ReportRepository, Depends(get_report_repository)],
+    category: Annotated[str | None, Query(description="Filter by report category")] = None,
+    status_filter: Annotated[
+        str | None,
+        Query(alias="status", description="Filter by report status"),
+    ] = None,
+    user_id: Annotated[UUID | None, Query(description="Filter by author user ID")] = None,
+    q: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            max_length=200,
+            description="Case-insensitive search across report title and address",
+        ),
+    ] = None,
+    created_from: Annotated[
+        datetime | None,
+        Query(description="Include reports created at or after this ISO-8601 timestamp"),
+    ] = None,
+    created_to: Annotated[
+        datetime | None,
+        Query(description="Include reports created at or before this ISO-8601 timestamp"),
+    ] = None,
+    sort: Annotated[
+        ReportSortField,
+        Query(
+            description="Sort order (whitelisted: created_at, -created_at, updated_at, -updated_at)",
+        ),
+    ] = "-created_at",
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ReportListResponse:
+    if created_from is not None and created_to is not None and created_from > created_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="created_from must be less than or equal to created_to",
+        )
+
+    items, total = await repo.list_reports(
+        limit=limit,
+        offset=offset,
+        category=category,
+        status=status_filter,
+        user_id=user_id,
+        q=q,
+        created_from=created_from,
+        created_to=created_to,
+        sort=sort,
     )
-
-
-@router.get("/{report_id}", response_model=ReportResponse)
-async def get_report(report_id: uuid.UUID, db: DBSession) -> ReportResponse:
-    return await report_service.get_report(db, report_id)
-
-
-@router.patch("/{report_id}", response_model=ReportResponse)
-async def update_report(
-    report_id: uuid.UUID,
-    payload: UpdateReportRequest,
-    current_user: CurrentUser,
-    db: DBSession,
-) -> ReportResponse:
-    return await report_service.update_report(db, report_id, current_user, payload)
-
-
-@router.delete("/{report_id}", status_code=204)
-async def delete_report(report_id: uuid.UUID, current_user: CurrentUser, db: DBSession) -> Response:
-    await report_service.delete_report(db, report_id, current_user)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return ReportListResponse(
+        items=[ReportRead.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
